@@ -118,8 +118,8 @@ app.get('/api/info', handleInfoRequest);
 app.get('/api/audio-stream', handleInfoRequest); // Alias cho tương thích cũ
 
 /**
- * Endpoint 2: Pipe trực tiếp luồng Audio qua Server Render (Proxy Audio Stream)
- * GET /api/stream-audio?url=https://www.youtube.com/watch?v=...
+ * Endpoint 2: Stream nhạc tức thì theo đoạn (Fast Chunked Streaming)
+ * GET /api/stream-audio?url=...
  */
 app.get('/api/stream-audio', (req, res) => {
     const videoUrl = req.query.url;
@@ -130,11 +130,14 @@ app.get('/api/stream-audio', (req, res) => {
 
     let args = [
         videoUrl,
-        '-f', 'ba[ext=m4a]/ba/bestaudio',
-        '-o', '-',
+        '-f', 'ba[ext=m4a]/ba/bestaudio/b',
+        '-o', '-', // Pipe trực tiếp ra stdout
         '--no-playlist',
         '--no-warnings',
         '--no-check-certificates',
+        // Tối ưu tốc độ: chỉ lấy buffer nhỏ ban đầu để phát ngay (Fast Start)
+        '--concurrent-fragments', '5',
+        '--buffer-size', '16k',
         '--extractor-args', 'youtube:player_client=android,ios,mweb'
     ];
 
@@ -142,11 +145,14 @@ app.get('/api/stream-audio', (req, res) => {
         args.push('--proxy', PROXY_URL);
     }
 
-    // Đổi thành audio/mp4 hoặc audio/aac để khớp chuẩn định dạng m4a của YouTube
+    // Thiết lập Header phát nhạc tức thì
     res.setHeader('Content-Type', 'audio/mp4');
     res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'no-cache');
 
     const ytProcess = spawn(ytDlpPath, args);
+
+    // Pipe ngay lập tức luồng dữ liệu về phía client
     ytProcess.stdout.pipe(res);
 
     ytProcess.stderr.on('data', (data) => {
@@ -154,8 +160,11 @@ app.get('/api/stream-audio', (req, res) => {
         if (msg.includes('ERROR:')) console.error('yt-dlp Stream Error:', msg);
     });
 
+    // Ngắt tiến trình ngay khi người dùng bấm tạm dừng, tua hoặc chuyển bài
     req.on('close', () => {
-        if (!ytProcess.killed) ytProcess.kill('SIGKILL');
+        if (!ytProcess.killed) {
+            ytProcess.kill('SIGKILL');
+        }
     });
 
     ytProcess.on('error', (err) => {
