@@ -7,10 +7,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Đường dẫn file yt-dlp binary
 const ytDlpPath = path.join(__dirname, 'yt-dlp');
-
-// Proxy URL từ Environment Variable hoặc điền trực tiếp
 const PROXY_URL = process.env.PROXY_URL || "http://sndjdzty:3bdt86sfpjkc@31.59.20.176:6754";
 
 app.get('/api/audio-stream', (req, res) => {
@@ -20,12 +17,15 @@ app.get('/api/audio-stream', (req, res) => {
         return res.status(400).json({ status: false, message: 'Thiếu tham số url' });
     }
 
-    // Lệnh yt-dlp tối ưu lấy định dạng audio tốt nhất (f bestaudio/best)
+    // TỐI ƯU CÁC CỜ LỆNH (COMMAND FLAGS)
     let commandArgs = [
         `"${ytDlpPath}"`,
         `"${videoUrl}"`,
-        '-f "bestaudio/best"', // Ép yt-dlp ưu tiên chọn ngay format audio tốt nhất
-        '--dump-single-json',
+        // Ép lấy định dạng Audio duy nhất có bitrate cao nhất (m4a, webm, opus...)
+        '-f "ba[ext=m4a]/ba/bestaudio"', 
+        '--no-playlist',             // Không quét playlist nếu url là danh sách phát (tăng tốc)
+        '--skip-download',           // Bỏ qua việc tải xuống
+        '--dump-single-json',        // Trả về JSON gọn
         '--no-warnings',
         '--no-check-certificates',
         '--extractor-args "youtube:player_client=android,ios,mweb"'
@@ -37,48 +37,44 @@ app.get('/api/audio-stream', (req, res) => {
 
     const command = commandArgs.join(' ');
 
-    exec(command, { maxBuffer: 1024 * 1024 * 15 }, (error, stdout, stderr) => {
+    // Giảm bớt maxBuffer vì JSON audio-only cực nhẹ
+    exec(command, { maxBuffer: 1024 * 1024 * 5 }, (error, stdout, stderr) => {
         if (error) {
             console.error("yt-dlp Error Details:", stderr || error.message);
-            return res.status(500).json({ 
-                status: false, 
-                error: 'Không thể bóc tách dữ liệu từ YouTube.' 
-            });
+            return res.status(500).json({ status: false, error: 'Không thể trích xuất Audio.' });
         }
 
         try {
             const output = JSON.parse(stdout);
             
-            // 1. Tìm đường dẫn stream trực tiếp từ output đã được yt-dlp chọn lọc (-f bestaudio/best)
+            // Tìm URL direct stream audio
             let audioUrl = output.url;
 
-            // 2. Nếu output.url không có, duyệt danh sách formats tìm bản Audio tốt nhất
-            if (!audioUrl && output.formats && output.formats.length > 0) {
-                const formats = output.formats;
-                
-                // Lọc format chỉ chứa Audio
-                const audioFormats = formats.filter(f => f.acodec && f.acodec !== 'none' && f.url);
-                
-                if (audioFormats.length > 0) {
-                    // Ưu tiên bản audio-only (không có video)
-                    const pureAudio = audioFormats.filter(f => f.vcodec === 'none');
-                    const targetFormat = pureAudio.length > 0 ? pureAudio[pureAudio.length - 1] : audioFormats[0];
-                    audioUrl = targetFormat.url;
+            if (!audioUrl && output.formats) {
+                // Lọc chính xác những format CHỈ CÓ AUDIO (vcodec === 'none')
+                const pureAudioFormats = output.formats.filter(f => f.vcodec === 'none' && f.acodec !== 'none' && f.url);
+                if (pureAudioFormats.length > 0) {
+                    audioUrl = pureAudioFormats[pureAudioFormats.length - 1].url;
                 }
             }
 
             if (!audioUrl) {
-                return res.status(404).json({ status: false, message: 'Không tìm thấy đường dẫn Stream Audio phù hợp.' });
+                return res.status(404).json({ status: false, message: 'Không tìm thấy Audio Stream phù hợp.' });
             }
 
+            // TỐI ƯU CACHE: Báo trình duyệt / CDN cache lại kết quả trong 2 tiếng
+            res.setHeader('Cache-Control', 'public, max-age=7200');
+
+            // TRẢ VỀ DỮ LIỆU TINH GỌN (Chỉ các trường cần thiết cho Player)
             return res.json({
                 status: true,
                 data: {
                     title: output.title,
-                    duration: output.duration,
-                    thumbnail: output.thumbnail,
-                    audio_url: audioUrl, // Link cắm trực tiếp vào thẻ <audio src="...">
-                    ext: output.ext || 'm4a'
+                    duration: output.duration,       // Độ dài (giây)
+                    thumbnail: output.thumbnail,     // Ảnh bìa bài hát
+                    audio_url: audioUrl,             // Link direct stream
+                    ext: output.ext || 'm4a',        // Đuôi file (.m4a, .webm)
+                    filesize: output.filesize || output.filesize_approx || null // Dung lượng dự kiến
                 }
             });
 
