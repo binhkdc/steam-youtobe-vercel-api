@@ -1,79 +1,62 @@
 const express = require('express');
 const cors = require('cors');
-const { Innertube, UniversalCache } = require('youtubei.js');
+const ytDlp = require('yt-dlp-exec');
 
 const app = express();
-
 app.use(cors());
 app.use(express.json());
 
-// Hàm trích xuất Video ID từ URL
-function extractVideoId(url) {
-    if (!url) return null;
-    const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
-    return match ? match[1] : null;
-}
-
-/**
- * Endpoint: Lấy thông tin video & Direct Stream Link
- * GET /api/info?url=https://www.youtube.com/watch?v=...
- */
-app.get('/api/info', async (req, res) => {
+app.get('/api/audio-stream', async (req, res) => {
     try {
         const videoUrl = req.query.url;
-        const videoId = extractVideoId(videoUrl);
 
-        if (!videoId) {
-            return res.status(400).json({ status: false, message: 'URL YouTube không hợp lệ' });
+        if (!videoUrl) {
+            return res.status(400).json({ status: false, message: 'Thiếu tham số url' });
         }
 
-        // Khởi tạo Innertube riêng cho mỗi invocation để tránh lỗi state trên Serverless
-        const yt = await Innertube.create({
-            cache: new UniversalCache(false),
-            generate_session_locale: 'en-US'
+        // Gọi yt-dlp lấy thông tin các stream
+        const output = await ytDlp(videoUrl, {
+            dumpSingleJson: true,
+            noCheckCertificates: true,
+            noWarnings: true,
+            preferFreeFormats: true,
+            addHeader: [
+                'referer:youtube.com',
+                'user-agent:googlebot'
+            ]
         });
 
-        // Lấy thông tin video
-        const info = await yt.getBasicInfo(videoId);
-        const streamingData = info.streaming_data;
+        const formats = output.formats || [];
+        
+        // CHỈ LỌC AUDIO: Lấy format không có video (vcodec === 'none') và có audio (acodec !== 'none')
+        // Sắp xếp chọn bitrate/chất lượng audio tốt nhất
+        const audioFormats = formats.filter(f => f.vcodec === 'none' && f.acodec !== 'none' && f.url);
+        const bestAudio = audioFormats[audioFormats.length - 1]; // Lấy bản audio chất lượng cao nhất
 
-        if (!streamingData) {
-            return res.status(404).json({ status: false, message: 'Không tìm thấy dữ liệu Stream' });
+        if (!bestAudio) {
+            return res.status(404).json({ status: false, message: 'Không tìm thấy Stream Audio' });
         }
-
-        // Lọc lấy Video+Audio combo và Audio riêng
-        const combinedFormats = streamingData.formats || [];
-        const bestCombined = combinedFormats[combinedFormats.length - 1];
-
-        const adaptiveFormats = streamingData.adaptive_formats || [];
-        const bestAudio = adaptiveFormats
-            .filter(f => f.mime_type && f.mime_type.includes('audio'))
-            .pop();
-
-        // Lấy url trực tiếp (sử dụng async decipher)
-        const streamUrl = bestCombined ? await bestCombined.decipher(yt.session) : null;
-        const audioUrl = bestAudio ? await bestAudio.decipher(yt.session) : null;
 
         return res.json({
             status: true,
             data: {
-                title: info.basic_info.title,
-                duration: info.basic_info.duration,
-                author: info.basic_info.author,
-                thumbnail: info.basic_info.thumbnail?.[0]?.url,
-                stream_url: streamUrl,
-                audio_url: audioUrl
+                title: output.title,
+                audio_url: bestAudio.url, // Link direct audio nhét thẳng vào <audio src="...">
+                ext: bestAudio.ext,       // Thường là m4a hoặc webm
+                filesize: bestAudio.filesize || bestAudio.filesize_approx
             }
         });
 
     } catch (error) {
-        // In ra console log để xem trong Vercel Dashboard nếu vẫn lỗi
-        console.error("API Error:", error);
-        return res.status(500).json({ status: false, error: error.message || 'Internal Error' });
+        console.error("yt-dlp Audio Error:", error.message);
+        return res.status(500).json({ 
+            status: false, 
+            error: 'Không thể trích xuất Audio. Vui lòng kiểm tra lại URL.' 
+        });
     }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Audio Server running on http://localhost:${PORT}`));
 
 module.exports = app;
