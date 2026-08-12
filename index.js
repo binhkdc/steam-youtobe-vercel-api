@@ -21,15 +21,7 @@ app.get('/api/audio-stream', (req, res) => {
     const hasCookies = fs.existsSync(cookiePath);
 
     // Cấu hình các client di động/TV vượt tường rào Datacenter
-    let commandArgs = [
-        `"${ytDlpPath}"`,
-        `"${videoUrl}"`,
-        '--dump-single-json',
-        '--no-warnings',
-        '--no-check-certificates',
-        // Chọn danh sách client ít bị quét bot nhất
-        '--extractor-args "youtube:player_client=android_creator,tv,web_embedded"'
-    ];
+    const commandArgs = `"${ytDlpPath}" "${videoUrl}" --extractor-args "youtube:player_client=android;po_token=web+M4A..." --dump-single-json --no-warnings --no-check-certificates`;
 
     if (hasCookies) {
         commandArgs.push(`--cookies "${cookiePath}"`);
