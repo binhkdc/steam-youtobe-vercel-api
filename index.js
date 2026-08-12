@@ -7,8 +7,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Đường dẫn tới file yt-dlp binary được tải về trong bước Build
+// Đường dẫn file yt-dlp binary
 const ytDlpPath = path.join(__dirname, 'yt-dlp');
+
+// Lấy Proxy từ biến môi trường (Environment Variable) trên Render HOẶC dán trực tiếp link proxy vào đây
+// Ví dụ format: "http://user123:pass123@185.200.100.1:8080" hoặc "socks5://185.200.100.1:1080"
+const PROXY_URL = process.env.PROXY_URL || "http://sndjdzty:3bdt86sfpjkc@31.59.20.176:6754";
 
 app.get('/api/audio-stream', (req, res) => {
     const videoUrl = req.query.url;
@@ -17,25 +21,29 @@ app.get('/api/audio-stream', (req, res) => {
         return res.status(400).json({ status: false, message: 'Thiếu tham số url' });
     }
 
-    // Các tham số kích hoạt Client ít bị quét Bot trên Datacenter
-    const commandArgs = [
+    // Cấu hình các tham số yt-dlp
+    let commandArgs = [
         `"${ytDlpPath}"`,
         `"${videoUrl}"`,
         '--dump-single-json',
         '--no-warnings',
         '--no-check-certificates',
-        '--extractor-args "youtube:player_client=android_creator,mweb,ios,tv_embedded"'
+        '--extractor-args "youtube:player_client=android,ios,mweb"'
     ];
+
+    // Nếu cấu hình Proxy, truyền thêm tham số --proxy vào yt-dlp
+    if (PROXY_URL && PROXY_URL !== "LINK_PROXY_CUA_BAN_O_DAY") {
+        commandArgs.push(`--proxy "${PROXY_URL}"`);
+    }
 
     const command = commandArgs.join(' ');
 
-    // Thực thi yt-dlp với bộ đệm maxBuffer 15MB để tránh văng lỗi khi JSON dài
     exec(command, { maxBuffer: 1024 * 1024 * 15 }, (error, stdout, stderr) => {
         if (error) {
             console.error("yt-dlp Error Details:", stderr || error.message);
             return res.status(500).json({ 
                 status: false, 
-                error: 'Không thể trích xuất Audio từ YouTube. Vui lòng thử lại sau.' 
+                error: 'Không thể trích xuất Audio từ YouTube. Hãy kiểm tra lại Proxy hoặc URL.' 
             });
         }
 
@@ -59,7 +67,7 @@ app.get('/api/audio-stream', (req, res) => {
                     title: output.title,
                     duration: output.duration,
                     thumbnail: output.thumbnail,
-                    audio_url: bestAudio.url, // Link direct paste trực tiếp vào thẻ <audio src="...">
+                    audio_url: bestAudio.url, // Link stream direct
                     ext: bestAudio.ext,
                     bitrate: bestAudio.abr || 'N/A'
                 }
@@ -67,7 +75,7 @@ app.get('/api/audio-stream', (req, res) => {
 
         } catch (e) {
             console.error("JSON Parse Error:", e.message);
-            return res.status(500).json({ status: false, error: 'Lỗi xử lý dữ liệu JSON từ YouTube.' });
+            return res.status(500).json({ status: false, error: 'Lỗi xử lý dữ liệu từ YouTube.' });
         }
     });
 });
