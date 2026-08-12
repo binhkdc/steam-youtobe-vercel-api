@@ -1,6 +1,8 @@
 {
   "name": "youtube-audio-api",
   "version": "1.0.0",
+  "description": "YouTube Audio Stream Extraction API with OAuth2 Bypass",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "build": "curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ./yt-dlp && chmod +x ./yt-dlp"

@@ -8,9 +8,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Đường dẫn file thực thi yt-dlp và file cookies
+// Đường dẫn tới file yt-dlp binary
 const ytDlpPath = path.join(__dirname, 'yt-dlp');
-const cookiePath = path.join(__dirname, 'cookies.txt');
 
 app.get('/api/audio-stream', (req, res) => {
     const videoUrl = req.query.url;
@@ -19,34 +18,27 @@ app.get('/api/audio-stream', (req, res) => {
         return res.status(400).json({ status: false, message: 'Thiếu tham số url' });
     }
 
-    // Tự động kiểm tra file cookies.txt có tồn tại không
-    const hasCookies = fs.existsSync(cookiePath);
-    
-    // Cấu hình danh sách tham số gửi cho yt-dlp
-    let commandArgs = [
+    // Các tham số tối ưu hóa cho YouTube Audio Stream + OAuth2
+    const commandArgs = [
         `"${ytDlpPath}"`,
         `"${videoUrl}"`,
+        '--username "oauth2"',
+        '--password ""',
         '--dump-single-json',
         '--no-warnings',
         '--no-check-certificates',
-        // Ép yt-dlp dùng các Player Client di động để tránh bị quét Bot
-        '--extractor-args "youtube:player_client=ios,android,web_creator"'
+        '--extractor-args "youtube:player_client=android,ios,web"'
     ];
-
-    // Nếu có file cookies.txt, ưu tiên truyền thêm tham số cookie
-    if (hasCookies) {
-        commandArgs.push(`--cookies "${cookiePath}"`);
-    }
 
     const command = commandArgs.join(' ');
 
-    // Thực thi lệnh yt-dlp
+    // Thực thi yt-dlp
     exec(command, { maxBuffer: 1024 * 1024 * 15 }, (error, stdout, stderr) => {
         if (error) {
             console.error("yt-dlp Error Details:", stderr || error.message);
             return res.status(500).json({ 
                 status: false, 
-                error: 'Không thể trích xuất Audio từ YouTube. Hãy kiểm tra lại URL hoặc cập nhật cookies.txt.' 
+                error: 'Không thể trích xuất Audio từ YouTube. Hãy kiểm tra Logs trên Render để kích hoạt OAuth2 nếu đây là lần đầu chạy.' 
             });
         }
 
@@ -54,10 +46,10 @@ app.get('/api/audio-stream', (req, res) => {
             const output = JSON.parse(stdout);
             const formats = output.formats || [];
 
-            // Lọc chỉ lấy Stream Audio (vcodec === 'none' và acodec !== 'none')
+            // Lọc lấy duy nhất Stream Audio (vcodec === 'none' và acodec !== 'none')
             const audioFormats = formats.filter(f => f.vcodec === 'none' && f.acodec !== 'none' && f.url);
             
-            // Chọn bản Audio có chất lượng/bitrate tốt nhất
+            // Lấy bản Audio có bitrate/chất lượng tốt nhất
             const bestAudio = audioFormats[audioFormats.length - 1];
 
             if (!bestAudio) {
@@ -70,7 +62,7 @@ app.get('/api/audio-stream', (req, res) => {
                     title: output.title,
                     duration: output.duration,
                     thumbnail: output.thumbnail,
-                    audio_url: bestAudio.url, // URL direct stream phát qua thẻ <audio>
+                    audio_url: bestAudio.url, // Link direct nhét thẳng vào thẻ <audio>
                     ext: bestAudio.ext,
                     bitrate: bestAudio.abr || 'N/A'
                 }
