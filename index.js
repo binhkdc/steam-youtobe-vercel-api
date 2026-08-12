@@ -21,9 +21,10 @@ function getMetadata(videoUrl, useProxy = true) {
         let commandArgs = [
             `"${ytDlpPath}"`,
             `"${videoUrl}"`,
-            '-f "ba[ext=m4a]/ba/bestaudio/b[ext=mp4]/b/best"',
+            '-f "ba[ext=m4a]/ba/bestaudio/b"', // Ép chọn Audio Stream
             '--no-playlist',
             '--skip-download',
+            '--no-write-thumbnail',            // Bỏ qua lấy thumbnail chi tiết (tăng tốc)
             '--dump-single-json',
             '--no-warnings',
             '--no-check-certificates',
@@ -96,12 +97,11 @@ const handleInfoRequest = async (req, res) => {
             status: true,
             data: {
                 title: output.title,
-                duration: output.duration,
-                author: output.uploader || output.channel || 'N/A',
-                thumbnail: output.thumbnail,
-                audio_url: audioUrl,                   // Direct link stream cho HTML5 <audio>
-                ext: output.ext || 'm4a',
-                filesize: output.filesize || output.filesize_approx || null
+                duration: output.duration,          // Thời lượng (giây)
+                author: output.uploader || 'N/A',   // Tên ca sĩ / Kênh
+                thumbnail: output.thumbnail,        // Ảnh đại diện bài hát
+                audio_url: audioUrl,                // Link direct stream phát nhạc
+                ext: output.ext || 'm4a'            // Định dạng file (m4a, webm)
             }
         });
 
@@ -130,8 +130,8 @@ app.get('/api/stream-audio', (req, res) => {
 
     let args = [
         videoUrl,
-        '-f', 'ba[ext=m4a]/ba/bestaudio/b',
-        '-o', '-', // Output ra stdout để pipe trực tiếp sang response
+        '-f', 'ba[ext=m4a]/ba/bestaudio',
+        '-o', '-',
         '--no-playlist',
         '--no-warnings',
         '--no-check-certificates',
@@ -142,32 +142,23 @@ app.get('/api/stream-audio', (req, res) => {
         args.push('--proxy', PROXY_URL);
     }
 
-    res.setHeader('Content-Type', 'audio/mpeg');
+    // Đổi thành audio/mp4 hoặc audio/aac để khớp chuẩn định dạng m4a của YouTube
+    res.setHeader('Content-Type', 'audio/mp4');
     res.setHeader('Accept-Ranges', 'bytes');
 
-    // Dùng spawn để stream dữ liệu thời gian thực (Real-time Stream)
     const ytProcess = spawn(ytDlpPath, args);
-
-    // Pipe stdout của yt-dlp vào Express response
     ytProcess.stdout.pipe(res);
 
     ytProcess.stderr.on('data', (data) => {
-        // Chỉ log stderr nếu có lỗi thực sự
         const msg = data.toString();
-        if (msg.includes('ERROR:')) {
-            console.error('yt-dlp Stream Error:', msg);
-        }
+        if (msg.includes('ERROR:')) console.error('yt-dlp Stream Error:', msg);
     });
 
-    // Xử lý dọn dẹp tiến trình khi người dùng ngắt kết nối (Stop/Seek/Close Tab)
     req.on('close', () => {
-        if (!ytProcess.killed) {
-            ytProcess.kill('SIGKILL');
-        }
+        if (!ytProcess.killed) ytProcess.kill('SIGKILL');
     });
 
     ytProcess.on('error', (err) => {
-        console.error('Process Error:', err.message);
         if (!res.headersSent) {
             res.status(500).json({ status: false, error: 'Lỗi tiến trình stream audio.' });
         }
