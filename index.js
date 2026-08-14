@@ -21,10 +21,9 @@ function getMetadata(videoUrl, useProxy = true) {
         let commandArgs = [
             `"${ytDlpPath}"`,
             `"${videoUrl}"`,
-            '-f "ba[ext=m4a]/ba/bestaudio/b"', // Ép chọn Audio Stream
+            '-f "ba[ext=m4a]/ba/bestaudio/b[ext=mp4]/b/best"',
             '--no-playlist',
             '--skip-download',
-            '--no-write-thumbnail',            // Bỏ qua lấy thumbnail chi tiết (tăng tốc)
             '--dump-single-json',
             '--no-warnings',
             '--no-check-certificates',
@@ -97,11 +96,12 @@ const handleInfoRequest = async (req, res) => {
             status: true,
             data: {
                 title: output.title,
-                duration: output.duration,          // Thời lượng (giây)
-                author: output.uploader || 'N/A',   // Tên ca sĩ / Kênh
-                thumbnail: output.thumbnail,        // Ảnh đại diện bài hát
-                audio_url: audioUrl,                // Link direct stream phát nhạc
-                ext: output.ext || 'm4a'            // Định dạng file (m4a, webm)
+                duration: output.duration,
+                author: output.uploader || output.channel || 'N/A',
+                thumbnail: output.thumbnail,
+                audio_url: audioUrl,                   // Direct link stream cho HTML5 <audio>
+                ext: output.ext || 'm4a',
+                filesize: output.filesize || output.filesize_approx || null
             }
         });
 
@@ -118,8 +118,8 @@ app.get('/api/info', handleInfoRequest);
 app.get('/api/audio-stream', handleInfoRequest); // Alias cho tương thích cũ
 
 /**
- * Endpoint 2: Stream nhạc tức thì theo đoạn (Fast Chunked Streaming)
- * GET /api/stream-audio?url=...
+ * Endpoint 2: Pipe trực tiếp luồng Audio qua Server Render (Proxy Audio Stream)
+ * GET /api/stream-audio?url=https://www.youtube.com/watch?v=...
  */
 app.get('/api/stream-audio', (req, res) => {
     const videoUrl = req.query.url;
@@ -131,13 +131,10 @@ app.get('/api/stream-audio', (req, res) => {
     let args = [
         videoUrl,
         '-f', 'ba[ext=m4a]/ba/bestaudio/b',
-        '-o', '-', // Pipe trực tiếp ra stdout
+        '-o', '-', // Output ra stdout để pipe trực tiếp sang response
         '--no-playlist',
         '--no-warnings',
         '--no-check-certificates',
-        // Tối ưu tốc độ: chỉ lấy buffer nhỏ ban đầu để phát ngay (Fast Start)
-        '--concurrent-fragments', '5',
-        '--buffer-size', '16k',
         '--extractor-args', 'youtube:player_client=android,ios,mweb'
     ];
 
@@ -145,22 +142,24 @@ app.get('/api/stream-audio', (req, res) => {
         args.push('--proxy', PROXY_URL);
     }
 
-    // Thiết lập Header phát nhạc tức thì
-    res.setHeader('Content-Type', 'audio/mp4');
+    res.setHeader('Content-Type', 'audio/mpeg');
     res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Cache-Control', 'no-cache');
 
+    // Dùng spawn để stream dữ liệu thời gian thực (Real-time Stream)
     const ytProcess = spawn(ytDlpPath, args);
 
-    // Pipe ngay lập tức luồng dữ liệu về phía client
+    // Pipe stdout của yt-dlp vào Express response
     ytProcess.stdout.pipe(res);
 
     ytProcess.stderr.on('data', (data) => {
+        // Chỉ log stderr nếu có lỗi thực sự
         const msg = data.toString();
-        if (msg.includes('ERROR:')) console.error('yt-dlp Stream Error:', msg);
+        if (msg.includes('ERROR:')) {
+            console.error('yt-dlp Stream Error:', msg);
+        }
     });
 
-    // Ngắt tiến trình ngay khi người dùng bấm tạm dừng, tua hoặc chuyển bài
+    // Xử lý dọn dẹp tiến trình khi người dùng ngắt kết nối (Stop/Seek/Close Tab)
     req.on('close', () => {
         if (!ytProcess.killed) {
             ytProcess.kill('SIGKILL');
@@ -168,6 +167,7 @@ app.get('/api/stream-audio', (req, res) => {
     });
 
     ytProcess.on('error', (err) => {
+        console.error('Process Error:', err.message);
         if (!res.headersSent) {
             res.status(500).json({ status: false, error: 'Lỗi tiến trình stream audio.' });
         }
