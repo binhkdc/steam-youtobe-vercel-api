@@ -10,23 +10,25 @@ app.use(express.json());
 // Đường dẫn file yt-dlp binary
 const ytDlpPath = path.join(__dirname, 'yt-dlp');
 
-// Proxy URL từ Environment Variable trên Render (hoặc fallback mặc định)
+// Proxy URL từ Environment Variable trên Render
 const PROXY_URL = process.env.PROXY_URL || "http://sndjdzty:3bdt86sfpjkc@31.59.20.176:6754";
 
 /**
- * Hàm hỗ trợ gọi yt-dlp lấy thông tin JSON (Trả về Promise)
+ * Hàm hỗ trợ gọi yt-dlp lấy thông tin JSON
  */
 function getMetadata(videoUrl, useProxy = true) {
     return new Promise((resolve, reject) => {
         let commandArgs = [
             `"${ytDlpPath}"`,
             `"${videoUrl}"`,
-            '-f "ba[ext=m4a]/ba/bestaudio/b[ext=mp4]/b/best"',
+            '-f "ba[ext=m4a]/ba/bestaudio/b"',
             '--no-playlist',
             '--skip-download',
+            '--no-write-thumbnail',
             '--dump-single-json',
             '--no-warnings',
             '--no-check-certificates',
+            '--force-ipv4', // Ép IPv4 để tránh lệch IP giữa v4/v6
             '--extractor-args "youtube:player_client=android,ios,mweb"'
         ];
 
@@ -51,9 +53,7 @@ function getMetadata(videoUrl, useProxy = true) {
 }
 
 /**
- * Endpoint 1: Lấy thông tin video & Direct Link Stream (JSON response)
- * GET /api/info?url=https://www.youtube.com/watch?v=...
- * GET /api/audio-stream?url=https://www.youtube.com/watch?v=... (Giữ tương thích ngược)
+ * Endpoint 1: Lấy thông tin Metadata bài hát
  */
 const handleInfoRequest = async (req, res) => {
     const videoUrl = req.query.url;
@@ -65,15 +65,12 @@ const handleInfoRequest = async (req, res) => {
     try {
         let output;
         try {
-            // Lần 1: Thử gọi qua Proxy Webshare
             output = await getMetadata(videoUrl, true);
         } catch (proxyError) {
-            console.warn("Proxy gặp sự cố, đang tự động thử lại không dùng Proxy...", proxyError);
-            // Lần 2: Fallback thử gọi trực tiếp
+            console.warn("Proxy gặp sự cố, tự động thử lại không dùng Proxy...", proxyError);
             output = await getMetadata(videoUrl, false);
         }
 
-        // Lấy link audio stream trực tiếp
         let audioUrl = output.url;
 
         if (!audioUrl && output.formats && output.formats.length > 0) {
@@ -89,19 +86,23 @@ const handleInfoRequest = async (req, res) => {
             return res.status(404).json({ status: false, message: 'Không tìm thấy đường dẫn Stream Audio phù hợp.' });
         }
 
-        // Tối ưu Cache Header 2 tiếng cho browser
         res.setHeader('Cache-Control', 'public, max-age=7200');
+
+        // Khuyên dùng: Client nên dùng stream_proxy_url để dán vào thẻ <audio> tránh bị lỗi 403
+        const protocol = req.protocol;
+        const host = req.get('host');
+        const streamProxyUrl = `${protocol}://${host}/api/stream-audio?url=${encodeURIComponent(videoUrl)}`;
 
         return res.json({
             status: true,
             data: {
                 title: output.title,
                 duration: output.duration,
-                author: output.uploader || output.channel || 'N/A',
+                author: output.uploader || 'N/A',
                 thumbnail: output.thumbnail,
-                audio_url: audioUrl,                   // Direct link stream cho HTML5 <audio>
-                ext: output.ext || 'm4a',
-                filesize: output.filesize || output.filesize_approx || null
+                stream_proxy_url: streamProxyUrl, // Dùng link này cho thẻ <audio> là 100% không lo 403
+                direct_audio_url: audioUrl,        // Direct URL gốc từ YouTube (có thể bị 403 nếu đổi IP Client)
+                ext: output.ext || 'm4a'
             }
         });
 
@@ -109,17 +110,17 @@ const handleInfoRequest = async (req, res) => {
         console.error("Final yt-dlp Error:", finalError);
         return res.status(500).json({ 
             status: false, 
-            error: 'Không thể trích xuất Audio từ YouTube. Hãy kiểm tra lại Proxy hoặc URL.' 
+            error: 'Không thể trích xuất Audio từ YouTube.' 
         });
     }
 };
 
 app.get('/api/info', handleInfoRequest);
-app.get('/api/audio-stream', handleInfoRequest); // Alias cho tương thích cũ
+app.get('/api/audio-stream', handleInfoRequest);
 
 /**
- * Endpoint 2: Pipe trực tiếp luồng Audio qua Server Render (Proxy Audio Stream)
- * GET /api/stream-audio?url=https://www.youtube.com/watch?v=...
+ * Endpoint 2: Proxy Stream Audio trực tiếp (SỬA LỖI 403 TRIỆT ĐỂ)
+ * Dùng URL này gắn thẳng vào src của thẻ <audio> phía Frontend
  */
 app.get('/api/stream-audio', (req, res) => {
     const videoUrl = req.query.url;
@@ -130,11 +131,12 @@ app.get('/api/stream-audio', (req, res) => {
 
     let args = [
         videoUrl,
-        '-f', 'ba[ext=m4a]/ba/bestaudio/b',
-        '-o', '-', // Output ra stdout để pipe trực tiếp sang response
+        '-f', 'ba[ext=m4a]/ba/bestaudio',
+        '-o', '-', // Stream trực tiếp ra stdout
         '--no-playlist',
         '--no-warnings',
         '--no-check-certificates',
+        '--force-ipv4',
         '--extractor-args', 'youtube:player_client=android,ios,mweb'
     ];
 
@@ -142,32 +144,27 @@ app.get('/api/stream-audio', (req, res) => {
         args.push('--proxy', PROXY_URL);
     }
 
-    res.setHeader('Content-Type', 'audio/mpeg');
+    // Set Header chuẩn cho browser stream
+    res.setHeader('Content-Type', 'audio/mp4');
     res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'no-cache');
 
-    // Dùng spawn để stream dữ liệu thời gian thực (Real-time Stream)
     const ytProcess = spawn(ytDlpPath, args);
 
-    // Pipe stdout của yt-dlp vào Express response
+    // Pipe dữ liệu trực tiếp về Client
     ytProcess.stdout.pipe(res);
 
     ytProcess.stderr.on('data', (data) => {
-        // Chỉ log stderr nếu có lỗi thực sự
         const msg = data.toString();
-        if (msg.includes('ERROR:')) {
-            console.error('yt-dlp Stream Error:', msg);
-        }
+        if (msg.includes('ERROR:')) console.error('yt-dlp Stream Error:', msg);
     });
 
-    // Xử lý dọn dẹp tiến trình khi người dùng ngắt kết nối (Stop/Seek/Close Tab)
+    // Khi người dùng tắt/stop nhạc hoặc đóng tab, ngắt ngay tiến trình yt-dlp để tiết kiệm RAM/CPU trên Render
     req.on('close', () => {
-        if (!ytProcess.killed) {
-            ytProcess.kill('SIGKILL');
-        }
+        if (!ytProcess.killed) ytProcess.kill('SIGKILL');
     });
 
     ytProcess.on('error', (err) => {
-        console.error('Process Error:', err.message);
         if (!res.headersSent) {
             res.status(500).json({ status: false, error: 'Lỗi tiến trình stream audio.' });
         }
