@@ -21,7 +21,8 @@ function getMetadata(videoUrl, useProxy = true) {
         // Mảng tham số nguyên bản, không dùng ngoặc đôi thủ công
         let args = [
             videoUrl,
-            '-f', 'ba[ext=m4a]/ba/bestaudio/b[ext=mp4]/b/best', // Ưu tiên m4a audio stream
+            // Ưu tiên m4a bitrate <= 128k để vừa nhẹ vừa dễ phát trên mọi browser
+            '-f', 'ba[ext=m4a][abr<=128]/wa[ext=m4a]/wa', 
             '--no-playlist',
             '--skip-download',
             '--dump-single-json',
