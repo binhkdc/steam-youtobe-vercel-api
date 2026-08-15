@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { exec, spawn } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const path = require('path');
 
 const app = express();
@@ -14,32 +14,30 @@ const ytDlpPath = path.join(__dirname, 'yt-dlp');
 const PROXY_URL = process.env.PROXY_URL || "http://sndjdzty:3bdt86sfpjkc@31.59.20.176:6754";
 
 /**
- * Hàm hỗ trợ gọi yt-dlp lấy thông tin JSON (Trả về Promise)
+ * Hàm hỗ trợ gọi yt-dlp lấy thông tin JSON (An toàn hơn với execFile)
  */
 function getMetadata(videoUrl, useProxy = true) {
     return new Promise((resolve, reject) => {
-        let commandArgs = [
-            `"${ytDlpPath}"`,
-            `"${videoUrl}"`,
-            '-f "ba[ext=m4a]/ba/bestaudio/b"', // Ép chọn Audio Stream
+        // Mảng tham số nguyên bản, không dùng ngoặc đôi thủ công
+        let args = [
+            videoUrl,
+            '-f', 'ba[ext=m4a]/ba/bestaudio/b[ext=mp4]/b/best', // Ưu tiên m4a audio stream
             '--no-playlist',
             '--skip-download',
-            '--no-write-thumbnail',            // Bỏ qua lấy thumbnail chi tiết (tăng tốc)
             '--dump-single-json',
             '--no-warnings',
             '--no-check-certificates',
-            '--extractor-args "youtube:player_client=android,ios,mweb"'
+            '--extractor-args', 'youtube:player_client=android,ios,mweb'
         ];
 
-        if (useProxy && PROXY_URL && PROXY_URL.startsWith("http")) {
-            commandArgs.push(`--proxy "${PROXY_URL}"`);
+        if (useProxy && typeof PROXY_URL === 'string' && PROXY_URL.startsWith("http")) {
+            args.push('--proxy', PROXY_URL);
         }
 
-        const command = commandArgs.join(' ');
-
-        exec(command, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
+        // Dùng execFile an toàn chống Command Injection và không bị đứt gãy chuỗi tham số
+        execFile(ytDlpPath, args, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
             if (error) {
-                return reject(stderr || error.message);
+                return reject(stderr.trim() || error.message);
             }
             try {
                 const output = JSON.parse(stdout);
@@ -54,7 +52,7 @@ function getMetadata(videoUrl, useProxy = true) {
 /**
  * Endpoint 1: Lấy thông tin video & Direct Link Stream (JSON response)
  * GET /api/info?url=https://www.youtube.com/watch?v=...
- * GET /api/audio-stream?url=https://www.youtube.com/watch?v=... (Giữ tương thích ngược)
+ * GET /api/audio-stream?url=https://www.youtube.com/watch?v=...
  */
 const handleInfoRequest = async (req, res) => {
     const videoUrl = req.query.url;
@@ -66,22 +64,30 @@ const handleInfoRequest = async (req, res) => {
     try {
         let output;
         try {
-            // Lần 1: Thử gọi qua Proxy Webshare
+            // Lần 1: Thử gọi qua Proxy
             output = await getMetadata(videoUrl, true);
         } catch (proxyError) {
             console.warn("Proxy gặp sự cố, đang tự động thử lại không dùng Proxy...", proxyError);
-            // Lần 2: Fallback thử gọi trực tiếp
+            // Lần 2: Fallback thử gọi trực tiếp không qua Proxy
             output = await getMetadata(videoUrl, false);
         }
 
-        // Lấy link audio stream trực tiếp
+        // Ưu tiên lấy link direct stream do yt-dlp tự chọn
         let audioUrl = output.url;
 
-        if (!audioUrl && output.formats && output.formats.length > 0) {
-            const pureAudio = output.formats.filter(f => f.vcodec === 'none' && f.acodec !== 'none' && f.url);
-            if (pureAudio.length > 0) {
-                audioUrl = pureAudio[pureAudio.length - 1].url;
+        // Nếu output.url không có, chủ động lọc trong danh sách output.formats
+        if (!audioUrl && Array.isArray(output.formats) && output.formats.length > 0) {
+            // Lọc các format chỉ có Audio (vcodec === 'none')
+            const pureAudioFormats = output.formats.filter(
+                f => f.vcodec === 'none' && f.acodec !== 'none' && f.url
+            );
+
+            if (pureAudioFormats.length > 0) {
+                // Ưu tiên chọn định dạng m4a (AAC) để tương thích tốt với thẻ <audio>
+                const m4aFormat = pureAudioFormats.find(f => f.ext === 'm4a');
+                audioUrl = m4aFormat ? m4aFormat.url : pureAudioFormats[pureAudioFormats.length - 1].url;
             } else {
+                // Fallback lấy format bất kỳ có sẵn URL
                 audioUrl = output.formats[0].url;
             }
         }
@@ -97,11 +103,12 @@ const handleInfoRequest = async (req, res) => {
             status: true,
             data: {
                 title: output.title,
-                duration: output.duration,          // Thời lượng (giây)
-                author: output.uploader || 'N/A',   // Tên ca sĩ / Kênh
-                thumbnail: output.thumbnail,        // Ảnh đại diện bài hát
-                audio_url: audioUrl,                // Link direct stream phát nhạc
-                ext: output.ext || 'm4a'            // Định dạng file (m4a, webm)
+                duration: output.duration,
+                author: output.uploader || output.channel || 'N/A',
+                thumbnail: output.thumbnail,
+                audio_url: audioUrl, // Direct link stream cho HTML5 <audio>
+                ext: output.ext || 'm4a',
+                filesize: output.filesize || output.filesize_approx || null
             }
         });
 
@@ -118,8 +125,8 @@ app.get('/api/info', handleInfoRequest);
 app.get('/api/audio-stream', handleInfoRequest); // Alias cho tương thích cũ
 
 /**
- * Endpoint 2: Stream nhạc tức thì theo đoạn (Fast Chunked Streaming)
- * GET /api/stream-audio?url=...
+ * Endpoint 2: Pipe trực tiếp luồng Audio qua Server Render (Proxy Audio Stream)
+ * GET /api/stream-audio?url=https://www.youtube.com/watch?v=...
  */
 app.get('/api/stream-audio', (req, res) => {
     const videoUrl = req.query.url;
@@ -131,36 +138,35 @@ app.get('/api/stream-audio', (req, res) => {
     let args = [
         videoUrl,
         '-f', 'ba[ext=m4a]/ba/bestaudio/b',
-        '-o', '-', // Pipe trực tiếp ra stdout
+        '-o', '-', // Output ra stdout để pipe trực tiếp sang response
         '--no-playlist',
         '--no-warnings',
         '--no-check-certificates',
-        // Tối ưu tốc độ: chỉ lấy buffer nhỏ ban đầu để phát ngay (Fast Start)
-        '--concurrent-fragments', '5',
-        '--buffer-size', '16k',
         '--extractor-args', 'youtube:player_client=android,ios,mweb'
     ];
 
-    if (PROXY_URL && PROXY_URL.startsWith("http")) {
+    if (PROXY_URL && typeof PROXY_URL === 'string' && PROXY_URL.startsWith("http")) {
         args.push('--proxy', PROXY_URL);
     }
 
-    // Thiết lập Header phát nhạc tức thì
+    // Set Content-Type đúng cho m4a/aac audio
     res.setHeader('Content-Type', 'audio/mp4');
     res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Cache-Control', 'no-cache');
 
+    // Dùng spawn để stream dữ liệu thời gian thực (Real-time Stream)
     const ytProcess = spawn(ytDlpPath, args);
 
-    // Pipe ngay lập tức luồng dữ liệu về phía client
+    // Pipe stdout của yt-dlp vào Express response
     ytProcess.stdout.pipe(res);
 
     ytProcess.stderr.on('data', (data) => {
         const msg = data.toString();
-        if (msg.includes('ERROR:')) console.error('yt-dlp Stream Error:', msg);
+        if (msg.includes('ERROR:')) {
+            console.error('yt-dlp Stream Error:', msg);
+        }
     });
 
-    // Ngắt tiến trình ngay khi người dùng bấm tạm dừng, tua hoặc chuyển bài
+    // Xử lý dọn dẹp tiến trình khi người dùng ngắt kết nối (Stop/Seek/Close Tab)
     req.on('close', () => {
         if (!ytProcess.killed) {
             ytProcess.kill('SIGKILL');
@@ -168,6 +174,7 @@ app.get('/api/stream-audio', (req, res) => {
     });
 
     ytProcess.on('error', (err) => {
+        console.error('Process Error:', err.message);
         if (!res.headersSent) {
             res.status(500).json({ status: false, error: 'Lỗi tiến trình stream audio.' });
         }
