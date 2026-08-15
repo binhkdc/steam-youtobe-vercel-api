@@ -11,7 +11,7 @@ app.use(express.json());
 const ytDlpPath = path.join(__dirname, 'yt-dlp');
 
 // Proxy URL từ Environment Variable trên Render (hoặc fallback mặc định)
-const PROXY_URL = process.env.PROXY_URL || "http://sndjdzty:3bdt86sfpjkc@31.59.20.176:6754";
+const PROXY_URL = process.env.PROXY_URL || "http://sndjdzty:3bdt86sfpjkc@31.56.127.193:7684";
 
 /**
  * Hàm hỗ trợ gọi yt-dlp lấy thông tin JSON (Trả về Promise)
