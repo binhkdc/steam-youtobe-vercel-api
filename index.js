@@ -121,57 +121,117 @@ app.get('/api/audio-stream', handleInfoRequest); // Alias cho tương thích cũ
  * Endpoint 2: Pipe trực tiếp luồng Audio qua Server Render (Proxy Audio Stream)
  * GET /api/stream-audio?url=https://www.youtube.com/watch?v=...
  */
-app.get('/api/stream-audio', (req, res) => {
-    const videoUrl = req.query.url;
+app.get('/api/stream-audio-old', (req, res) => {
+   const videoUrl = req.query.url;
 
     if (!videoUrl) {
         return res.status(400).json({ status: false, message: 'Thiếu tham số url' });
     }
 
-    let args = [
-        videoUrl,
-        '-f', 'ba[ext=m4a]/ba/bestaudio/b',
-        '-o', '-', // Output ra stdout để pipe trực tiếp sang response
-        '--no-playlist',
-        '--no-warnings',
-        '--no-check-certificates',
-        '--extractor-args', 'youtube:player_client=android,ios,mweb'
-    ];
+    try {
+        // BƯỚC 1: Lấy URL Direct Stream và Info từ yt-dlp dạng JSON
+        let args = [
+            videoUrl,
+            '-f', 'ba[ext=m4a]/ba/bestaudio',
+            '--dump-single-json',
+            '--no-playlist',
+            '--no-warnings',
+            '--no-check-certificates',
+            '--extractor-args', 'youtube:player_client=android,ios,mweb'
+        ];
 
-    if (PROXY_URL && PROXY_URL.startsWith("http")) {
-        args.push('--proxy', PROXY_URL);
+        if (PROXY_URL && PROXY_URL.startsWith("http")) {
+            args.push('--proxy', PROXY_URL);
+        }
+
+        // Nếu có file cookies trên Linux VPS thì thêm vào
+        // args.push('--cookies', COOKIES_PATH);
+
+        const ytProc = spawn(ytDlpPath, args);
+        let stdoutData = '';
+        let stderrData = '';
+
+        ytProc.stdout.on('data', (chunk) => { stdoutData += chunk; });
+        ytProc.stderr.on('data', (chunk) => { stderrData += chunk; });
+
+        ytProc.on('close', (code) => {
+            if (code !== 0 || !stdoutData) {
+                console.error('yt-dlp Error:', stderrData);
+                return res.status(500).json({ status: false, error: 'Không thể lấy thông tin stream.' });
+            }
+
+            try {
+                const info = JSON.parse(stdoutData);
+                const directAudioUrl = info.url; // Đường dẫn stream gốc từ YouTube CDN
+                const mimeType = info.ext === 'm4a' ? 'audio/mp4' : (info.ext === 'webm' ? 'audio/webm' : 'audio/mpeg');
+
+                if (!directAudioUrl) {
+                    return res.status(404).json({ status: false, error: 'Không tìm thấy URL Audio.' });
+                }
+
+                // BƯỚC 2: Forward Request sang YouTube CDN có hỗ trợ HTTP Range (Tua nhạc)
+                const client = directAudioUrl.startsWith('https') ? https : http;
+                const parsedUrl = new URL(directAudioUrl);
+
+                const reqHeaders = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': '*/*',
+                };
+
+                // Chuyển tiếp Range Header từ App/Trình duyệt sang YouTube CDN để tua nhạc
+                if (req.headers.range) {
+                    reqHeaders['Range'] = req.headers.range;
+                }
+
+                const options = {
+                    hostname: parsedUrl.hostname,
+                    path: parsedUrl.pathname + parsedUrl.search,
+                    method: 'GET',
+                    headers: reqHeaders
+                };
+
+                const proxyReq = client.request(options, (proxyRes) => {
+                    // Trả lại đúng Status Code (200 hoặc 206 Partial Content)
+                    res.status(proxyRes.statusCode);
+
+                    // Thiết lập đúng Headers trả về cho Client
+                    res.setHeader('Content-Type', proxyRes.headers['content-type'] || mimeType);
+                    res.setHeader('Accept-Ranges', 'bytes');
+
+                    if (proxyRes.headers['content-length']) {
+                        res.setHeader('Content-Length', proxyRes.headers['content-length']);
+                    }
+                    if (proxyRes.headers['content-range']) {
+                        res.setHeader('Content-Range', proxyRes.headers['content-range']);
+                    }
+
+                    // Nối luồng stream dữ liệu
+                    proxyRes.pipe(res);
+
+                    req.on('close', () => {
+                        proxyReq.destroy();
+                    });
+                });
+
+                proxyReq.on('error', (err) => {
+                    console.error('Proxy Error:', err.message);
+                    if (!res.headersSent) {
+                        res.status(500).json({ status: false, error: 'Lỗi truyền tải stream.' });
+                    }
+                });
+
+                proxyReq.end();
+
+            } catch (e) {
+                console.error('JSON Parse Error:', e);
+                return res.status(500).json({ status: false, error: 'Lỗi xử lý dữ liệu stream.' });
+            }
+        });
+
+    } catch (err) {
+        console.error('Server Internal Error:', err);
+        res.status(500).json({ status: false, error: 'Lỗi hệ thống.' });
     }
-
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Accept-Ranges', 'bytes');
-
-    // Dùng spawn để stream dữ liệu thời gian thực (Real-time Stream)
-    const ytProcess = spawn(ytDlpPath, args);
-
-    // Pipe stdout của yt-dlp vào Express response
-    ytProcess.stdout.pipe(res);
-
-    ytProcess.stderr.on('data', (data) => {
-        // Chỉ log stderr nếu có lỗi thực sự
-        const msg = data.toString();
-        if (msg.includes('ERROR:')) {
-            console.error('yt-dlp Stream Error:', msg);
-        }
-    });
-
-    // Xử lý dọn dẹp tiến trình khi người dùng ngắt kết nối (Stop/Seek/Close Tab)
-    req.on('close', () => {
-        if (!ytProcess.killed) {
-            ytProcess.kill('SIGKILL');
-        }
-    });
-
-    ytProcess.on('error', (err) => {
-        console.error('Process Error:', err.message);
-        if (!res.headersSent) {
-            res.status(500).json({ status: false, error: 'Lỗi tiến trình stream audio.' });
-        }
-    });
 });
 
 const PORT = process.env.PORT || 3000;
