@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 const http = require('http');
 const https = require('https');
 
@@ -10,7 +11,23 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-const ytDlpPath = path.join(__dirname, 'yt-dlp');
+function resolveYtDlpExecutable() {
+    const candidates = [
+        path.join(__dirname, 'yt-dlp.exe'),
+        path.join(__dirname, 'yt-dlp'),
+        path.join(__dirname, 'yt-dlp.cmd')
+    ];
+
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+            return candidate;
+        }
+    }
+
+    return path.join(__dirname, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+}
+
+const ytDlpPath = resolveYtDlpExecutable();
 const PROXY_URL = process.env.PROXY_URL || 'http://sndjdzty:3bdt86sfpjkc@31.59.20.176:6754';
 const AUDIO_FORMAT_PREFERENCE = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best';
 
