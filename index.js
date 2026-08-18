@@ -13,8 +13,8 @@ app.use(express.static(__dirname));
 
 function resolveYtDlpExecutable() {
     const candidates = [
-        path.join(__dirname, 'yt-dlp.exe'),
         path.join(__dirname, 'yt-dlp'),
+        path.join(__dirname, 'yt-dlp.exe'),
         path.join(__dirname, 'yt-dlp.cmd')
     ];
 

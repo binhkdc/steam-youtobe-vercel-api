@@ -4,7 +4,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "build": "node -e \"const fs=require('fs'); const https=require('https'); const path=require('path'); const file=path.join(process.cwd(),'yt-dlp.exe'); const url='https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'; const req=https.get(url,res=>{if(res.statusCode>=300&&res.statusCode<400&&res.headers.location){return https.get(res.headers.location,res2=>{res2.pipe(fs.createWriteStream(file));});} if(res.statusCode!==200){throw new Error('Download failed: '+res.statusCode);} res.pipe(fs.createWriteStream(file));}); req.on('error',err=>{console.error(err); process.exit(1);});\""
+    "build": "node -e \"const fs=require('fs'); const https=require('https'); const path=require('path'); const file=path.join(process.cwd(),'yt-dlp'); const url='https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp'; const req=https.get(url,res=>{if(res.statusCode>=300&&res.statusCode<400&&res.headers.location){return https.get(res.headers.location,res2=>{res2.pipe(fs.createWriteStream(file)); res2.on('end',()=>{fs.chmodSync(file,0o755);});});} if(res.statusCode!==200){throw new Error('Download failed: '+res.statusCode);} res.pipe(fs.createWriteStream(file)); res.on('end',()=>{fs.chmodSync(file,0o755);});}); req.on('error',err=>{console.error(err); process.exit(1);});\""
   },
   "dependencies": {
     "cors": "^2.8.5",
