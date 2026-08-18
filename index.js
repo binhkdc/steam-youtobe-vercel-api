@@ -8,6 +8,7 @@ const https = require('https');
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.static(__dirname));
 
 const ytDlpPath = path.join(__dirname, 'yt-dlp');
 const PROXY_URL = process.env.PROXY_URL || 'http://sndjdzty:3bdt86sfpjkc@31.59.20.176:6754';
@@ -199,6 +200,10 @@ app.get('/api/stream-audio', async (req, res) => {
             error: 'Không thể tạo stream audio-only.'
         });
     }
+});
+
+app.get('/test-audio', (req, res) => {
+    res.sendFile(path.join(__dirname, 'test-audio.html'));
 });
 
 const PORT = process.env.PORT || 3000;

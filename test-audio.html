@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Test Audio YouTube</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+      }
+      .card {
+        width: min(720px, 92vw);
+        background: #111827;
+        border: 1px solid #334155;
+        border-radius: 16px;
+        padding: 24px;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+      }
+      h2 {
+        margin-top: 0;
+        margin-bottom: 16px;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 18px;
+      }
+      input {
+        flex: 1;
+        padding: 12px 14px;
+        border: 1px solid #475569;
+        border-radius: 10px;
+        background: #0f172a;
+        color: #f8fafc;
+      }
+      button {
+        padding: 12px 18px;
+        border: 0;
+        border-radius: 10px;
+        background: #22c55e;
+        color: white;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button:hover { opacity: 0.95; }
+      .meta {
+        min-height: 18px;
+        margin-bottom: 14px;
+        color: #cbd5e1;
+      }
+      audio {
+        width: 100%;
+        margin-top: 10px;
+      }
+      .error {
+        color: #fda4af;
+        margin-top: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h2>Test phát audio YouTube</h2>
+
+      <div class="row">
+        <input
+          id="youtubeUrl"
+          type="text"
+          placeholder="Dán URL YouTube ví dụ: https://www.youtube.com/watch?v=..."
+          value="https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        />
+        <button id="loadBtn">Load audio</button>
+      </div>
+
+      <div id="meta" class="meta">Chưa có dữ liệu</div>
+      <audio id="audioPlayer" controls preload="metadata"></audio>
+      <div id="errorBox" class="error"></div>
+    </div>
+
+    <script>
+      const input = document.getElementById('youtubeUrl');
+      const loadBtn = document.getElementById('loadBtn');
+      const audio = document.getElementById('audioPlayer');
+      const meta = document.getElementById('meta');
+      const errorBox = document.getElementById('errorBox');
+
+      async function loadAudio() {
+        const url = input.value.trim();
+        if (!url) {
+          errorBox.textContent = 'Vui lòng nhập URL YouTube';
+          return;
+        }
+
+        errorBox.textContent = 'Đang xử lý...';
+        meta.textContent = 'Đang lấy thông tin audio...';
+
+        try {
+          const res = await fetch('/api/info?url=' + encodeURIComponent(url));
+          const json = await res.json();
+
+          if (!res.ok || !json.status) {
+            throw new Error(json.error || json.message || 'Không thể lấy thông tin audio.');
+          }
+
+          const { title, author, thumbnail } = json.data;
+          meta.innerHTML = `<strong>${title}</strong><br />${author}`;
+
+          const streamUrl = '/api/stream-audio?url=' + encodeURIComponent(url);
+          audio.src = streamUrl;
+          audio.load();
+          audio.play();
+          errorBox.textContent = '';
+        } catch (err) {
+          console.error(err);
+          meta.textContent = 'Không thể tải audio';
+          errorBox.textContent = err.message;
+        }
+      }
+
+      loadBtn.addEventListener('click', loadAudio);
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') loadAudio();
+      });
+    </script>
+  </body>
+</html>
