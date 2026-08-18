@@ -78,6 +78,20 @@ function runYtDlp(args, useProxy = true) {
     });
 }
 
+function isAudioFormat(format) {
+    if (!format || !format.url) return false;
+
+    const mime = (format.mime_type || format.mime || '').toLowerCase();
+    const vcodec = String(format.vcodec || '').toLowerCase();
+    const acodec = String(format.acodec || '').toLowerCase();
+
+    const isAudioMime = mime.includes('audio');
+    const isExplicitAudio = vcodec === 'none' && acodec !== 'none';
+    const isPossibleAudioFromM4a = mime.includes('audio') || (vcodec === 'none' && !acodec.includes('none'));
+
+    return isAudioMime || isExplicitAudio || isPossibleAudioFromM4a;
+}
+
 async function getAudioInfo(videoUrl, useProxy = true) {
     const jsonString = await runYtDlp([
         videoUrl,
@@ -91,19 +105,20 @@ async function getAudioInfo(videoUrl, useProxy = true) {
     ], useProxy);
 
     const output = JSON.parse(jsonString);
-    const audioCandidates = (output.formats || []).filter(
-        (format) => format && format.vcodec === 'none' && format.acodec && format.acodec !== 'none' && format.url
-    );
-
+    const audioCandidates = (output.formats || []).filter((format) => isAudioFormat(format));
     const bestAudio = audioCandidates.sort((a, b) => (b.tbr || 0) - (a.tbr || 0))[0];
 
-    if (!bestAudio && !output.url) {
+    const fallbackAudioUrl = output.url && String(output.url).includes('googlevideo.com') && String(output.url).includes('mime=video')
+        ? null
+        : output.url;
+
+    if (!bestAudio && !fallbackAudioUrl) {
         throw new Error('No valid audio stream found in yt-dlp result.');
     }
 
     return {
         ...output,
-        audio_url: bestAudio?.url || output.url,
+        audio_url: bestAudio?.url || fallbackAudioUrl,
         ext: bestAudio?.ext || output.ext || 'm4a',
         mime_type: bestAudio?.ext === 'webm' ? 'audio/webm' : 'audio/mp4'
     };
@@ -194,7 +209,7 @@ const handleInfoRequest = async (req, res) => {
     try {
         const output = await resolveAudio(videoUrl);
 
-        if (!output.audio_url || String(output.audio_url).includes('storyboard') || String(output.audio_url).includes('i.ytimg.com/vi/') && !String(output.audio_url).includes('.mp4') && !String(output.audio_url).includes('.m4a') && !String(output.audio_url).includes('.webm')) {
+        if (!output.audio_url || String(output.audio_url).includes('storyboard') || String(output.audio_url).includes('mime=video') || String(output.audio_url).includes('itag=18') || String(output.audio_url).includes('videoplayback') && !String(output.audio_url).includes('mime=audio')) {
             return res.status(404).json({
                 status: false,
                 message: 'Không tìm thấy đường dẫn stream audio thực sự.'
