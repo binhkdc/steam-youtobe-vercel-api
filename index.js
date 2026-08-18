@@ -30,6 +30,7 @@ function resolveYtDlpExecutable() {
 const ytDlpPath = resolveYtDlpExecutable();
 const PROXY_URL = process.env.PROXY_URL || 'http://sndjdzty:3bdt86sfpjkc@31.59.20.176:6754';
 const AUDIO_FORMAT_PREFERENCE = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best';
+const MAX_AUDIO_RETRIES = 2;
 
 function runYtDlp(args, useProxy = true) {
     return new Promise((resolve, reject) => {
@@ -38,6 +39,8 @@ function runYtDlp(args, useProxy = true) {
         if (useProxy && PROXY_URL && PROXY_URL.startsWith('http')) {
             commandArgs.push('--proxy', PROXY_URL);
         }
+
+        console.log('[yt-dlp] start', JSON.stringify({ useProxy, args: commandArgs.slice(0, 6) }));
 
         const ytProc = spawn(ytDlpPath, commandArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
         let stdout = '';
@@ -51,15 +54,24 @@ function runYtDlp(args, useProxy = true) {
             stderr += chunk.toString();
         });
 
-        ytProc.on('error', (error) => reject(error));
+        ytProc.on('error', (error) => {
+            console.error('[yt-dlp] spawn error', error.message);
+            reject(error);
+        });
+
         ytProc.on('close', (code) => {
             if (code !== 0) {
-                return reject(stderr.trim() || `yt-dlp exited with code ${code}`);
+                const details = (stderr || '').trim() || `yt-dlp exited with code ${code}`;
+                console.error('[yt-dlp] fail', { code, useProxy, details });
+                return reject(details);
             }
 
             try {
-                resolve(stdout.trim());
+                const trimmed = stdout.trim();
+                console.log('[yt-dlp] success', { useProxy, length: trimmed.length });
+                resolve(trimmed);
             } catch (error) {
+                console.error('[yt-dlp] parse error', error.message);
                 reject(error);
             }
         });
@@ -94,12 +106,25 @@ async function getAudioInfo(videoUrl, useProxy = true) {
 }
 
 async function resolveAudio(videoUrl) {
-    try {
-        return await getAudioInfo(videoUrl, true);
-    } catch (proxyError) {
-        console.warn('Proxy lỗi, thử lại không dùng proxy...', proxyError);
-        return await getAudioInfo(videoUrl, false);
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= MAX_AUDIO_RETRIES; attempt += 1) {
+        const useProxy = attempt === 1;
+
+        try {
+            console.log('[resolveAudio] try', { attempt, useProxy, videoUrl });
+            return await getAudioInfo(videoUrl, useProxy);
+        } catch (error) {
+            lastError = error;
+            console.warn('[resolveAudio] failed', { attempt, useProxy, message: String(error) });
+
+            if (attempt < MAX_AUDIO_RETRIES) {
+                continue;
+            }
+        }
     }
+
+    throw lastError || new Error('resolveAudio failed');
 }
 
 function streamAudioToClient(req, res, directAudioUrl, mimeType) {
@@ -217,6 +242,15 @@ app.get('/api/stream-audio', async (req, res) => {
             error: 'Không thể tạo stream audio-only.'
         });
     }
+});
+
+app.get('/health', (req, res) => {
+    res.json({
+        status: true,
+        message: 'ok',
+        ytDlpPath,
+        proxyConfigured: !!(PROXY_URL && PROXY_URL.startsWith('http'))
+    });
 });
 
 app.get('/test-audio', (req, res) => {
