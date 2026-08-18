@@ -18,35 +18,41 @@ const PROXY_URL = process.env.PROXY_URL || "http://sndjdzty:3bdt86sfpjkc@31.56.1
  */
 function getMetadata(videoUrl, useProxy = true) {
     return new Promise((resolve, reject) => {
-        let commandArgs = [
-            `"${ytDlpPath}"`,
-            `"${videoUrl}"`,
-            '-f "ba[ext=m4a]/ba/bestaudio/b[ext=mp4]/b/best"',
+        const args = [
+            videoUrl,
+            '-f', 'ba[ext=m4a]/ba[ext=webm]/ba/bestaudio',
             '--no-playlist',
             '--skip-download',
             '--dump-single-json',
             '--no-warnings',
             '--no-check-certificates',
-            '--extractor-args "youtube:player_client=android,ios,mweb"'
+            '--extractor-args', 'youtube:player_client=android,ios,mweb'
         ];
 
         if (useProxy && PROXY_URL && PROXY_URL.startsWith("http")) {
-            commandArgs.push(`--proxy "${PROXY_URL}"`);
+            args.push('--proxy', PROXY_URL);
         }
 
-        const command = commandArgs.join(' ');
+        const process = spawn(ytDlpPath, args, { maxBuffer: 10 * 1024 * 1024 });
 
-        exec(command, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
-            if (error) {
-                return reject(stderr || error.message);
+        let stdout = '';
+        let stderr = '';
+
+        process.stdout.on('data', (data) => stdout += data.toString());
+        process.stderr.on('data', (data) => stderr += data.toString());
+
+        process.on('close', (code) => {
+            if (code !== 0) {
+                return reject(stderr || `yt-dlp exited with code ${code}`);
             }
             try {
-                const output = JSON.parse(stdout);
-                resolve(output);
+                resolve(JSON.parse(stdout));
             } catch (e) {
-                reject('Lỗi parse dữ liệu JSON từ YouTube.');
+                reject('Lỗi parse JSON từ yt-dlp');
             }
         });
+
+        process.on('error', (err) => reject(err.message));
     });
 }
 
@@ -74,15 +80,22 @@ const handleInfoRequest = async (req, res) => {
         }
 
         // Lấy link audio stream trực tiếp
-        let audioUrl = output.url;
+        let audioUrl = null;
 
-        if (!audioUrl && output.formats && output.formats.length > 0) {
-            const pureAudio = output.formats.filter(f => f.vcodec === 'none' && f.acodec !== 'none' && f.url);
+        // Ưu tiên format pure audio (vcodec = none)
+        if (output.formats && output.formats.length > 0) {
+            const pureAudio = output.formats
+                .filter(f => f.vcodec === 'none' && f.acodec !== 'none' && f.url)
+                .sort((a, b) => (b.abr || 0) - (a.abr || 0)); // bitrate cao nhất
+
             if (pureAudio.length > 0) {
-                audioUrl = pureAudio[pureAudio.length - 1].url;
-            } else {
-                audioUrl = output.formats[0].url;
+                audioUrl = pureAudio[0].url;
             }
+        }
+
+        // Fallback nếu vẫn không có
+        if (!audioUrl) {
+            audioUrl = output.url;
         }
 
         if (!audioUrl) {
@@ -130,8 +143,8 @@ app.get('/api/stream-audio', (req, res) => {
 
     let args = [
         videoUrl,
-        '-f', 'ba[ext=m4a]/ba/bestaudio/b',
-        '-o', '-', // Output ra stdout để pipe trực tiếp sang response
+        '-f', 'ba[ext=m4a]/ba[ext=webm]/ba/bestaudio',  // ← chỉ audio
+        '-o', '-',
         '--no-playlist',
         '--no-warnings',
         '--no-check-certificates',
@@ -142,24 +155,22 @@ app.get('/api/stream-audio', (req, res) => {
         args.push('--proxy', PROXY_URL);
     }
 
-    res.setHeader('Content-Type', 'audio/mpeg');
+    // Content-Type linh hoạt hơn (m4a hoặc webm đều được)
+    res.setHeader('Content-Type', 'audio/mp4'); // hoặc 'audio/webm'
     res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'no-cache');
 
-    // Dùng spawn để stream dữ liệu thời gian thực (Real-time Stream)
     const ytProcess = spawn(ytDlpPath, args);
 
-    // Pipe stdout của yt-dlp vào Express response
     ytProcess.stdout.pipe(res);
 
     ytProcess.stderr.on('data', (data) => {
-        // Chỉ log stderr nếu có lỗi thực sự
         const msg = data.toString();
         if (msg.includes('ERROR:')) {
             console.error('yt-dlp Stream Error:', msg);
         }
     });
 
-    // Xử lý dọn dẹp tiến trình khi người dùng ngắt kết nối (Stop/Seek/Close Tab)
     req.on('close', () => {
         if (!ytProcess.killed) {
             ytProcess.kill('SIGKILL');
@@ -170,6 +181,12 @@ app.get('/api/stream-audio', (req, res) => {
         console.error('Process Error:', err.message);
         if (!res.headersSent) {
             res.status(500).json({ status: false, error: 'Lỗi tiến trình stream audio.' });
+        }
+    });
+
+    ytProcess.on('close', (code) => {
+        if (code !== 0 && !res.headersSent) {
+            res.status(500).json({ status: false, error: 'yt-dlp kết thúc với lỗi' });
         }
     });
 });
