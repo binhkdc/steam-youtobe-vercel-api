@@ -26,7 +26,7 @@ function getMetadata(videoUrl, useProxy = true) {
             '--dump-single-json',
             '--no-warnings',
             '--no-check-certificates',
-            '--extractor-args', 'youtube:player_client=android,ios,mweb'
+            '--extractor-args', 'youtube:player_client=android,android_vr,mweb,tv_downgraded'
         ];
 
         if (useProxy && PROXY_URL && PROXY_URL.startsWith("http")) {
@@ -41,20 +41,16 @@ function getMetadata(videoUrl, useProxy = true) {
         process.stdout.on('data', (data) => stdout += data.toString());
         process.stderr.on('data', (data) => stderr += data.toString());
 
-        process.on('close', (code) => {
-            if (code !== 0) {
+        if (code !== 0) {
+                console.error('=== yt-dlp STDERR ===');
+                console.error(stderr);
+                console.error('=====================');
                 return reject(stderr || `yt-dlp exited with code ${code}`);
             }
-            try {
-                resolve(JSON.parse(stdout));
-            } catch (e) {
-                reject('Lỗi parse JSON từ yt-dlp');
-            }
-        });
 
-        process.on('error', (err) => reject(err.message));
-    });
-}
+                process.on('error', (err) => reject(err.message));
+            });
+        }
 
 /**
  * Endpoint 1: Lấy thông tin video & Direct Link Stream (JSON response)
