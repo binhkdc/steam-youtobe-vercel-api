@@ -21,7 +21,7 @@ function getMetadata(videoUrl, useProxy = true) {
         let commandArgs = [
             `"${ytDlpPath}"`,
             `"${videoUrl}"`,
-            '-f "ba[ext=m4a]/ba[ext=webm]/ba/bestaudio"',
+            '-f "ba[ext=m4a]/ba[ext=webm]/ba/bestaudio/best"',
             '--no-playlist',
             '--skip-download',
             '--dump-single-json',
