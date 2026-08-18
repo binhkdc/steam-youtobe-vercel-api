@@ -137,6 +137,7 @@ app.get('/api/stream-audio-old', (req, res) => {
             '--no-playlist',
             '--no-warnings',
             '--no-check-certificates',
+            '--cookies', './cookies.txt', // 👈 THÊM DÒNG NÀY (đặt file cookies.txt cùng thư mục dự án)
             '--extractor-args', 'youtube:player_client=android,ios,mweb'
         ];
 
