@@ -20,7 +20,7 @@ function getMetadata(videoUrl, useProxy = true) {
     return new Promise((resolve, reject) => {
         const args = [
             videoUrl,
-            '-f', 'ba[ext=m4a]/ba[ext=webm]/ba/bestaudio',
+            '-f', 'ba[ext=m4a]/ba[ext=webm]/ba/bestaudio/best',
             '--no-playlist',
             '--skip-download',
             '--dump-single-json',
