@@ -78,18 +78,33 @@ function runYtDlp(args, useProxy = true) {
     });
 }
 
+function looksLikeAudioUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+
+    const lower = url.toLowerCase();
+    if (lower.includes('storyboard')) return false;
+    if (lower.includes('mime=video')) return false;
+    if (lower.includes('itag=18')) return false;
+    if (lower.includes('mime=audio')) return true;
+    if (lower.includes('.m4a') || lower.includes('.mp3') || lower.includes('.webm') || lower.includes('.ogg')) return true;
+    return false;
+}
+
 function isAudioFormat(format) {
     if (!format || !format.url) return false;
 
     const mime = (format.mime_type || format.mime || '').toLowerCase();
+    const url = String(format.url || '').toLowerCase();
     const vcodec = String(format.vcodec || '').toLowerCase();
     const acodec = String(format.acodec || '').toLowerCase();
 
-    const isAudioMime = mime.includes('audio');
-    const isExplicitAudio = vcodec === 'none' && acodec !== 'none';
-    const isPossibleAudioFromM4a = mime.includes('audio') || (vcodec === 'none' && !acodec.includes('none'));
-
-    return isAudioMime || isExplicitAudio || isPossibleAudioFromM4a;
+    if (url.includes('storyboard')) return false;
+    if (url.includes('mime=video')) return false;
+    if (mime.includes('video')) return false;
+    if (vcodec === 'none' && acodec && acodec !== 'none') return true;
+    if (mime.includes('audio')) return true;
+    if (acodec && acodec !== 'none' && vcodec !== 'avc1') return true;
+    return false;
 }
 
 async function getAudioInfo(videoUrl, useProxy = true) {
@@ -106,21 +121,21 @@ async function getAudioInfo(videoUrl, useProxy = true) {
 
     const output = JSON.parse(jsonString);
     const audioCandidates = (output.formats || []).filter((format) => isAudioFormat(format));
-    const bestAudio = audioCandidates.sort((a, b) => (b.tbr || 0) - (a.tbr || 0))[0];
-
-    const fallbackAudioUrl = output.url && String(output.url).includes('googlevideo.com') && String(output.url).includes('mime=video')
-        ? null
-        : output.url;
+    const bestAudio = audioCandidates.sort((a, b) => (Number(b.tbr || b.abr || 0) - Number(a.tbr || a.abr || 0)))[0];
+    const fallbackAudioUrl = output.url && looksLikeAudioUrl(output.url) ? output.url : null;
 
     if (!bestAudio && !fallbackAudioUrl) {
         throw new Error('No valid audio stream found in yt-dlp result.');
     }
 
+    const selectedAudioUrl = bestAudio?.url || fallbackAudioUrl;
+    const selectedMimeType = bestAudio?.mime_type || output.mime_type || (selectedAudioUrl && selectedAudioUrl.toLowerCase().includes('webm') ? 'audio/webm' : 'audio/mp4');
+
     return {
         ...output,
-        audio_url: bestAudio?.url || fallbackAudioUrl,
+        audio_url: selectedAudioUrl,
         ext: bestAudio?.ext || output.ext || 'm4a',
-        mime_type: bestAudio?.ext === 'webm' ? 'audio/webm' : 'audio/mp4'
+        mime_type: selectedMimeType
     };
 }
 
@@ -209,7 +224,7 @@ const handleInfoRequest = async (req, res) => {
     try {
         const output = await resolveAudio(videoUrl);
 
-        if (!output.audio_url || String(output.audio_url).includes('storyboard') || String(output.audio_url).includes('mime=video') || String(output.audio_url).includes('itag=18') || String(output.audio_url).includes('videoplayback') && !String(output.audio_url).includes('mime=audio')) {
+        if (!output.audio_url || !looksLikeAudioUrl(output.audio_url)) {
             return res.status(404).json({
                 status: false,
                 message: 'Không tìm thấy đường dẫn stream audio thực sự.'
