@@ -92,10 +92,14 @@ async function getAudioInfo(videoUrl, useProxy = true) {
 
     const output = JSON.parse(jsonString);
     const audioCandidates = (output.formats || []).filter(
-        (format) => format.vcodec === 'none' && format.acodec && format.url
+        (format) => format && format.vcodec === 'none' && format.acodec && format.acodec !== 'none' && format.url
     );
 
     const bestAudio = audioCandidates.sort((a, b) => (b.tbr || 0) - (a.tbr || 0))[0];
+
+    if (!bestAudio && !output.url) {
+        throw new Error('No valid audio stream found in yt-dlp result.');
+    }
 
     return {
         ...output,
@@ -190,10 +194,10 @@ const handleInfoRequest = async (req, res) => {
     try {
         const output = await resolveAudio(videoUrl);
 
-        if (!output.audio_url) {
+        if (!output.audio_url || String(output.audio_url).includes('storyboard') || String(output.audio_url).includes('i.ytimg.com/vi/') && !String(output.audio_url).includes('.mp4') && !String(output.audio_url).includes('.m4a') && !String(output.audio_url).includes('.webm')) {
             return res.status(404).json({
                 status: false,
-                message: 'Không tìm thấy đường dẫn stream audio phù hợp.'
+                message: 'Không tìm thấy đường dẫn stream audio thực sự.'
             });
         }
 
